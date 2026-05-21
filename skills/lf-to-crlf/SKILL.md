@@ -1,6 +1,6 @@
 ---
 name: lf-to-crlf
-description: 将 Git 修改文件中的 LF 换行符转换为 CRLF。当 Git 报错 "fatal: LF would be replaced by CRLF" 或类似换行符相关错误导致 add/commit/checkout 等操作失败时必须触发此 skill。也适用于手动将 Git 仓库中文件的换行符从 LF 批量转换为 CRLF 的场景（跨平台协作中 Windows 开发者处理 Unix 风格换行符）。
+description: '将 Git 修改文件中的 LF 换行符转换为 CRLF。当 Git 报错 "fatal: LF would be replaced by CRLF" 或类似换行符相关错误导致 add/commit/checkout 等操作失败时必须触发此 skill。也适用于手动将 Git 仓库中文件的换行符从 LF 批量转换为 CRLF 的场景（跨平台协作中 Windows 开发者处理 Unix 风格换行符）。'
 ---
 
 # LF → CRLF 换行符转换
