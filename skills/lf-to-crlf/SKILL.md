@@ -47,20 +47,22 @@ fatal: LF would be replaced by CRLF in <file-path>
 对提取出的文件执行换行符转换：
 
 ```powershell
-# PS> 单文件或多文件直接指定
-perl -pi -e 's/\r?\n/\r\n/' <lf-files>
+# PS> 单文件：读取内容 → 正则替换 → 写回
+(Get-Content <file> -Raw) -replace '\r?\n', "`r`n" | Set-Content <file> -NoNewline
 ```
 
 ```bash
-# $ 同上（Bash 环境）
-perl -pi -e 's/\r?\n/\r\n/' <lf-files>
+# $ 单文件
+perl -pi -e 's/\r?\n/\r\n/' <file>
 ```
 
-如果文件数量较多，可以使用循环逐个转换：
+如果文件数量较多，循环逐个转换：
 
 ```powershell
 # PS> 逐文件转换
-@('<file1>', '<file2>', '<file3>') | ForEach-Object { perl -pi -e 's/\r?\n/\r\n/' $_ }
+@('<file1>', '<file2>', '<file3>') | ForEach-Object {
+  (Get-Content $_ -Raw) -replace '\r?\n', "`r`n" | Set-Content $_ -NoNewline
+}
 ```
 
 ```bash
@@ -73,8 +75,9 @@ for f in <file1> <file2> <file3>; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 转换完成后，验证换行符并重新执行之前被阻止的 Git 操作：
 
 ```powershell
-# PS> 检查文件是否包含 CRLF（匹配 \r\n 则说明已是 CRLF）
-Get-Content <file> -Raw | Select-String "`r`n" | ForEach-Object { Write-Host "$_ : CRLF" }
+# PS> 检查文件是否包含 CRLF
+$hasCRLF = (Get-Content <file> -Raw) -match "`r`n"
+Write-Host "$(if ($hasCRLF) { 'CRLF ✓' } else { 'UNKNOWN ✗' }) : <file>"
 ```
 
 ```bash
@@ -139,16 +142,16 @@ done
 对检测出的 LF 文件执行换行符转换：
 
 ```powershell
-# PS> 逐文件转换
-$lfFiles | ForEach-Object { perl -pi -e 's/\r?\n/\r\n/' $_ }
+# PS> 逐文件读取 → 替换 → 写回
+$lfFiles | ForEach-Object {
+  (Get-Content $_ -Raw) -replace '\r?\n', "`r`n" | Set-Content $_ -NoNewline
+}
 ```
 
 ```bash
-# $ 逐文件转换
+# $ 逐文件转换（依赖 perl，Linux/macOS 默认已安装）
 for f in "${lf_files[@]}"; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 ```
-
-`perl` 命令兼容 Git for Windows 和 Unix 环境。
 
 ### 4. 验证转换结果
 
@@ -175,8 +178,8 @@ done
 
 - 仅作用于**当前 Git 仓库**内的文件 — 使用 `git` 命令自动限定到当前工作目录
 - 跳过已经为 CRLF 编码的文件，不做重复转换
-- 使用 `perl -pi -e` 进行原地转换，无需创建临时文件
 - 如果文件列表为空，提前结束并提示用户
-- **Windows 环境优先使用 PowerShell**（`PS>` 前缀的命令），避免依赖 Git Bash 或 WSL
-- **Linux/macOS 环境使用 Bash**（`$` 前缀的命令）
+- **Windows 环境**：使用纯 PowerShell 方案（`-replace` + `Set-Content -NoNewline`），零外部依赖
+- **Linux/macOS 环境**：使用 `perl -pi -e` 原地转换
 - `git` 子命令在两环境下语法一致，无需区分
+- `Get-Content -Raw` 将文件读取为单个字符串，避免逐行处理丢失换行符；`Set-Content -NoNewline` 防止写入时追加多余换行
