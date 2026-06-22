@@ -44,11 +44,12 @@ fatal: LF would be replaced by CRLF in <file-path>
 
 ### 2. 转换为 CRLF
 
-对提取出的文件执行换行符转换：
+对提取出的文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 单文件：读取内容 → 正则替换 → 写回
-(Get-Content <file> -Raw) -replace '\r?\n', "`r`n" | Set-Content <file> -NoNewline
+# PS> 单文件：读取 → 去 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
+$content = (Get-Content <file> -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+[System.IO.File]::WriteAllText((Resolve-Path <file>).Path, $content, (New-Object System.Text.UTF8Encoding $false))
 ```
 
 ```bash
@@ -60,8 +61,10 @@ perl -pi -e 's/\r?\n/\r\n/' <file>
 
 ```powershell
 # PS> 逐文件转换
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 @('<file1>', '<file2>', '<file3>') | ForEach-Object {
-  (Get-Content $_ -Raw) -replace '\r?\n', "`r`n" | Set-Content $_ -NoNewline
+  $content = (Get-Content $_ -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+  [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
 ```
 
@@ -75,8 +78,9 @@ for f in <file1> <file2> <file3>; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 转换完成后，验证换行符并重新执行之前被阻止的 Git 操作：
 
 ```powershell
-# PS> 检查文件是否包含 CRLF
-$hasCRLF = (Get-Content <file> -Raw) -match "`r`n"
+# PS> 检查文件是否包含 CRLF（-replace '^﻿' 先去除可能的 BOM 避免干扰检测）
+$raw = (Get-Content <file> -Raw) -replace '^﻿'
+$hasCRLF = $raw -match "`r`n"
 Write-Host "$(if ($hasCRLF) { 'CRLF ✓' } else { 'UNKNOWN ✗' }) : <file>"
 ```
 
@@ -139,12 +143,14 @@ done
 
 ### 3. 转换为 CRLF
 
-对检测出的 LF 文件执行换行符转换：
+对检测出的 LF 文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 逐文件读取 → 替换 → 写回
+# PS> 逐文件读取 → 去 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $lfFiles | ForEach-Object {
-  (Get-Content $_ -Raw) -replace '\r?\n', "`r`n" | Set-Content $_ -NoNewline
+  $content = (Get-Content $_ -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+  [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
 ```
 
@@ -160,7 +166,8 @@ for f in "${lf_files[@]}"; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 ```powershell
 # PS> 验证
 foreach ($f in $lfFiles) {
-  $hasCRLF = (Get-Content $f -Raw) -match "`r`n"
+  $raw = (Get-Content $f -Raw) -replace '^﻿'
+  $hasCRLF = $raw -match "`r`n"
   Write-Host "$f : $(if ($hasCRLF) { 'CRLF' } else { 'UNKNOWN' })"
 }
 ```
@@ -179,7 +186,9 @@ done
 - 仅作用于**当前 Git 仓库**内的文件 — 使用 `git` 命令自动限定到当前工作目录
 - 跳过已经为 CRLF 编码的文件，不做重复转换
 - 如果文件列表为空，提前结束并提示用户
-- **Windows 环境**：使用纯 PowerShell 方案（`-replace` + `Set-Content -NoNewline`），零外部依赖
+- **Windows 环境**：使用纯 PowerShell 方案，零外部依赖
+  - `Get-Content -Raw` 读入整个文件为单个字符串，避免逐行处理丢失换行符
+  - `-replace '^﻿'` 去除 UTF-8 BOM（`﻿`），因为 PowerShell 5.1 读 BOM 文件时会将其保留在内容开头
+  - `[System.IO.File]::WriteAllText()` + `UTF8Encoding($false)` 写入 UTF-8 无 BOM，避免 `Set-Content` 在 PS 5.1 默认产出 UTF-16 LE 或 UTF-8 with BOM 的问题
 - **Linux/macOS 环境**：使用 `perl -pi -e` 原地转换
 - `git` 子命令在两环境下语法一致，无需区分
-- `Get-Content -Raw` 将文件读取为单个字符串，避免逐行处理丢失换行符；`Set-Content -NoNewline` 防止写入时追加多余换行
