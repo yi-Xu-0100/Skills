@@ -47,8 +47,12 @@ fatal: LF would be replaced by CRLF in <file-path>
 对提取出的文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 单文件：读取 → 去 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
-$content = (Get-Content <file> -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+# PS> 单文件：读取 → 检测并去除 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
+$content = Get-Content <file> -Raw
+# 若首字符为 UTF-8 BOM（U+FEFF）则移除；无 BOM 时跳过，不会产生异常
+if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+$content = $content -replace '\r?\n', "`r`n"
+# .NET WriteAllText + UTF8Encoding($false) 写入 UTF-8 无 BOM，兼容 PS 5.1 / 7+
 [System.IO.File]::WriteAllText((Resolve-Path <file>).Path, $content, (New-Object System.Text.UTF8Encoding $false))
 ```
 
@@ -63,7 +67,9 @@ perl -pi -e 's/\r?\n/\r\n/' <file>
 # PS> 逐文件转换
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 @('<file1>', '<file2>', '<file3>') | ForEach-Object {
-  $content = (Get-Content $_ -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+  $content = Get-Content $_ -Raw
+  if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+  $content = $content -replace '\r?\n', "`r`n"
   [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
 ```
@@ -78,8 +84,9 @@ for f in <file1> <file2> <file3>; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 转换完成后，验证换行符并重新执行之前被阻止的 Git 操作：
 
 ```powershell
-# PS> 检查文件是否包含 CRLF（-replace '^﻿' 先去除可能的 BOM 避免干扰检测）
-$raw = (Get-Content <file> -Raw) -replace '^﻿'
+# PS> 检查文件是否包含 CRLF（先检测并去除可能的 BOM 避免干扰）
+$raw = Get-Content <file> -Raw
+if ($raw -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
 $hasCRLF = $raw -match "`r`n"
 Write-Host "$(if ($hasCRLF) { 'CRLF ✓' } else { 'UNKNOWN ✗' }) : <file>"
 ```
@@ -146,10 +153,12 @@ done
 对检测出的 LF 文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 逐文件读取 → 去 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
+# PS> 逐文件读取 → 检测并去除 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $lfFiles | ForEach-Object {
-  $content = (Get-Content $_ -Raw) -replace '^﻿' -replace '\r?\n', "`r`n"
+  $content = Get-Content $_ -Raw
+  if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+  $content = $content -replace '\r?\n', "`r`n"
   [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
 ```
@@ -166,7 +175,8 @@ for f in "${lf_files[@]}"; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 ```powershell
 # PS> 验证
 foreach ($f in $lfFiles) {
-  $raw = (Get-Content $f -Raw) -replace '^﻿'
+  $raw = Get-Content $f -Raw
+  if ($raw -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
   $hasCRLF = $raw -match "`r`n"
   Write-Host "$f : $(if ($hasCRLF) { 'CRLF' } else { 'UNKNOWN' })"
 }
@@ -186,9 +196,9 @@ done
 - 仅作用于**当前 Git 仓库**内的文件 — 使用 `git` 命令自动限定到当前工作目录
 - 跳过已经为 CRLF 编码的文件，不做重复转换
 - 如果文件列表为空，提前结束并提示用户
-- **Windows 环境**：使用纯 PowerShell 方案，零外部依赖
-  - `Get-Content -Raw` 读入整个文件为单个字符串，避免逐行处理丢失换行符
-  - `-replace '^﻿'` 去除 UTF-8 BOM（`﻿`），因为 PowerShell 5.1 读 BOM 文件时会将其保留在内容开头
-  - `[System.IO.File]::WriteAllText()` + `UTF8Encoding($false)` 写入 UTF-8 无 BOM，避免 `Set-Content` 在 PS 5.1 默认产出 UTF-16 LE 或 UTF-8 with BOM 的问题
+- **Windows 环境**：使用纯 PowerShell + .NET 方案，PS 5.1 / 7+ 均可用，零外部依赖
+  - 写入使用 `[System.IO.File]::WriteAllText()` + `UTF8Encoding($false)`，确保输出 UTF-8 无 BOM
+  - 读取后以 `$content[0] -eq [char]0xFEFF` 显式检测 UTF-8 BOM，存在才移除，不存在则跳过
+  - `-replace '\r?\n', "\`r\`n"` 将任意换行符统一转为 CRLF
 - **Linux/macOS 环境**：使用 `perl -pi -e` 原地转换
 - `git` 子命令在两环境下语法一致，无需区分
