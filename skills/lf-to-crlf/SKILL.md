@@ -16,6 +16,15 @@ description: '将 Git 修改文件中的 LF 换行符转换为 CRLF。当 Git �
 
 下文命令块中同时提供了两种环境的写法，`PS>` 前缀表示 PowerShell，`$` 前缀表示 Bash。根据检测到的环境选择对应的命令执行。
 
+## ⚠️ 编码红线（Windows/PowerShell 必读）
+
+本 skill 处理的多为 **UTF-8（含中文）** 文件。PowerShell 读取必须**显式按 UTF-8**：
+
+- 用 `[System.IO.File]::ReadAllText(path, (New-Object System.Text.UTF8Encoding $false))` 读取，该方法自动识别并去除 UTF-8 BOM。
+- **禁止使用 `Get-Content`（不带 `-Encoding`）读取文件**：Windows PowerShell 5.1 下其默认按 ANSI 代码页解码（中文系统 = gb2312），会把 UTF-8 文件的中文读成乱码；若再按 UTF-8 写回即造成**不可逆的双重编码损坏**。即使 PowerShell 7 默认 UTF-8，为兼容 5.1 也统一不用 `Get-Content`。
+- 检测换行符可不解码文本：把字节按 ASCII 解释即可（CR/LF 均为 ASCII 字节，任何源编码下判断都准确）。
+- 写入固定用 `WriteAllText + UTF8Encoding($false)`，输出 UTF-8 无 BOM。
+
 ## 触发场景
 
 ### 场景 A：Git 操作被 LF/CRLF 错误阻止
@@ -47,13 +56,11 @@ fatal: LF would be replaced by CRLF in <file-path>
 对提取出的文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 单文件：读取 → 检测并去除 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
-$content = Get-Content <file> -Raw
-# 若首字符为 UTF-8 BOM（U+FEFF）则移除；无 BOM 时跳过，不会产生异常
-if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+# PS> 单文件：显式 UTF-8 读取（自动去除 BOM）→ 替换换行符 → 写回（UTF-8 无 BOM）
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$content = [System.IO.File]::ReadAllText((Resolve-Path <file>).Path, $utf8NoBom)
 $content = $content -replace '\r?\n', "`r`n"
-# .NET WriteAllText + UTF8Encoding($false) 写入 UTF-8 无 BOM，兼容 PS 5.1 / 7+
-[System.IO.File]::WriteAllText((Resolve-Path <file>).Path, $content, (New-Object System.Text.UTF8Encoding $false))
+[System.IO.File]::WriteAllText((Resolve-Path <file>).Path, $content, $utf8NoBom)
 ```
 
 ```bash
@@ -64,11 +71,10 @@ perl -pi -e 's/\r?\n/\r\n/' <file>
 如果文件数量较多，循环逐个转换：
 
 ```powershell
-# PS> 逐文件转换
+# PS> 逐文件转换（切勿改用 Get-Content，见「编码红线」）
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 @('<file1>', '<file2>', '<file3>') | ForEach-Object {
-  $content = Get-Content $_ -Raw
-  if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+  $content = [System.IO.File]::ReadAllText((Resolve-Path $_).Path, $utf8NoBom)
   $content = $content -replace '\r?\n', "`r`n"
   [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
@@ -84,11 +90,10 @@ for f in <file1> <file2> <file3>; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 转换完成后，验证换行符并重新执行之前被阻止的 Git 操作：
 
 ```powershell
-# PS> 检查文件是否包含 CRLF（先检测并去除可能的 BOM 避免干扰）
-$raw = Get-Content <file> -Raw
-if ($raw -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
-$hasCRLF = $raw -match "`r`n"
-Write-Host "$(if ($hasCRLF) { 'CRLF ✓' } else { 'UNKNOWN ✗' }) : <file>"
+# PS> 检查文件是否包含 CRLF
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$raw = [System.IO.File]::ReadAllText((Resolve-Path <file>).Path, $utf8NoBom)
+Write-Host "$(if ($raw -match "`r`n") { 'CRLF ✓' } else { 'UNKNOWN ✗' }) : <file>"
 ```
 
 ```bash
@@ -125,12 +130,13 @@ untracked=$(git ls-files --others --exclude-standard)
 对文件列表中的每个文件，检查其是否包含 CRLF 换行符。已含 `\r\n` 的为 CRLF 格式，否则为 LF 格式。
 
 ```powershell
-# PS> 检测 LF 文件：不包含 \r\n 的文件即为 LF
+# PS> 检测 LF 文件：按字节/ASCII 判断换行符，不解码文本，任何源编码都安全
 $lfFiles = @()
 foreach ($f in $allFiles) {
   if (-not (Test-Path $f)) { continue }
-  $content = Get-Content $f -Raw -ErrorAction SilentlyContinue
-  if ($content -and $content -notmatch "`r`n") {
+  $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $f).Path)
+  $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
+  if ($ascii -notmatch "`r`n") {
     $lfFiles += $f
   }
 }
@@ -153,11 +159,10 @@ done
 对检测出的 LF 文件执行换行符转换（PowerShell 产出 UTF-8 without BOM）：
 
 ```powershell
-# PS> 逐文件读取 → 检测并去除 BOM → 替换换行符 → 写回（UTF-8 无 BOM）
+# PS> 逐文件显式 UTF-8 读取 → 替换换行符 → 写回（UTF-8 无 BOM）
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $lfFiles | ForEach-Object {
-  $content = Get-Content $_ -Raw
-  if ($content -and $content[0] -eq [char]0xFEFF) { $content = $content.Substring(1) }
+  $content = [System.IO.File]::ReadAllText((Resolve-Path $_).Path, $utf8NoBom)
   $content = $content -replace '\r?\n', "`r`n"
   [System.IO.File]::WriteAllText((Resolve-Path $_).Path, $content, $utf8NoBom)
 }
@@ -173,12 +178,11 @@ for f in "${lf_files[@]}"; do perl -pi -e 's/\r?\n/\r\n/' "$f"; done
 确认所有被转换的文件现在为 CRLF 编码：
 
 ```powershell
-# PS> 验证
+# PS> 验证（显式 UTF-8 读取）
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 foreach ($f in $lfFiles) {
-  $raw = Get-Content $f -Raw
-  if ($raw -and $raw[0] -eq [char]0xFEFF) { $raw = $raw.Substring(1) }
-  $hasCRLF = $raw -match "`r`n"
-  Write-Host "$f : $(if ($hasCRLF) { 'CRLF' } else { 'UNKNOWN' })"
+  $raw = [System.IO.File]::ReadAllText((Resolve-Path $f).Path, $utf8NoBom)
+  Write-Host "$f : $(if ($raw -match "`r`n") { 'CRLF' } else { 'UNKNOWN' })"
 }
 ```
 
@@ -197,8 +201,9 @@ done
 - 跳过已经为 CRLF 编码的文件，不做重复转换
 - 如果文件列表为空，提前结束并提示用户
 - **Windows 环境**：使用纯 PowerShell + .NET 方案，PS 5.1 / 7+ 均可用，零外部依赖
-  - 写入使用 `[System.IO.File]::WriteAllText()` + `UTF8Encoding($false)`，确保输出 UTF-8 无 BOM
-  - 读取后以 `$content[0] -eq [char]0xFEFF` 显式检测 UTF-8 BOM，存在才移除，不存在则跳过
+  - 读取：`[System.IO.File]::ReadAllText(path, (New-Object System.Text.UTF8Encoding $false))` —— 显式 UTF-8，自动识别并去除 BOM
+  - 写入：`[System.IO.File]::WriteAllText(path, content, 同上的 UTF8Encoding $false)` —— 输出 UTF-8 无 BOM
+  - **不要用 `Get-Content` 读取**：PS 5.1 默认按 ANSI（中文系统 gb2312）解码，会把 UTF-8 中文变成不可逆乱码（真实事故教训）
   - `-replace '\r?\n', "\`r\`n"` 将任意换行符统一转为 CRLF
 - **Linux/macOS 环境**：使用 `perl -pi -e` 原地转换
 - `git` 子命令在两环境下语法一致，无需区分
