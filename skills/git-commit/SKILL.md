@@ -148,6 +148,7 @@ rm -f "$msgFile"
 
 - PowerShell **不要用 `Set-Content` 写消息文件**：PS 5.1 会写成 UTF-16 LE 或带 BOM 的 UTF-8；用 `WriteAllText` + `UTF8Encoding $false` 才稳定。
 - Bash 用 `<<'EOF'`（引号防止 `$`、反引号被展开），输出天然符合要求。
+- **写消息文件、`git commit -F`、删除临时文件要在同一次执行（同一个 shell 会话）里完成**：受限环境可能按次隔离系统临时目录，普通执行与提权执行看到的临时目录并不相同，跨执行写入的文件在后一次里读不到，`git commit` 会报 `could not read log file ...`。
 - 仅当消息确定为**纯 ASCII 且单行**时，才可直接 `git commit -m "<subject>"`；含中文或多行一律走文件。
 
 ### 4. GPG 签名：一次提权、多次使用
@@ -156,14 +157,25 @@ rm -f "$msgFile"
 
 需要签名的提交**不止一笔**时，不要每笔单独提权（每次提权都要用户授权一次）：
 
-1. 先完成全部准备：分批 `git add`，为每份提交各写一个临时信息文件，提交信息逐条经用户确认；
-2. 把**全部** `git commit -F <文件>` 放进**同一次**提权执行里，做到一次授权、多次使用；
+1. 先与用户敲定全部提交：确定每笔的 `git add` 范围与完整提交信息（消息文件先不落盘）；
+2. 在**同一次提权执行**里逐笔「写消息文件 → `git commit -F`」；写文件与提交必须在同一次执行内完成——否则提权执行读不到此前写的文件，这样才能一次授权、多次使用；
 3. 所有提交成功后再统一删除全部临时文件。
 
 ```powershell
-# 同一次提权内完成多笔签名提交（一次授权覆盖全部）
-git commit -F (Join-Path $env:TEMP 'commit-1.txt')
-git commit -F (Join-Path $env:TEMP 'commit-2.txt')
+# 同一次提权执行内完成多笔签名提交：每笔都是「写消息文件 → git commit -F」
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+$m1 = Join-Path $env:TEMP 'commit-1.txt'
+$s1 = [string]::Join([char]10, @('feat(a): 主题一', '', '- 说明'))
+[System.IO.File]::WriteAllText($m1, $s1, $utf8NoBom)
+git commit -F $m1
+
+$m2 = Join-Path $env:TEMP 'commit-2.txt'
+$s2 = [string]::Join([char]10, @('docs(b): 主题二', '', '- 说明'))
+[System.IO.File]::WriteAllText($m2, $s2, $utf8NoBom)
+git commit -F $m2
+
+Remove-Item -Force $m1, $m2
 ```
 
 若中途某笔失败，先查明原因再决定是否补一次提权；任何时候都不要改用 `--no-gpg-sign`（用户明确要求除外）。
@@ -185,6 +197,7 @@ $ git status
 - 不主动 `git add -A`，只暂存确认过的文件
 - **提交信息默认走文件，不走命令行**：中文/多行消息先写临时文件（UTF-8 无 BOM + LF），用 `git commit -F` 提交，最后删除临时文件
 - 临时文件放系统临时目录，不要放进仓库；提交结束后必须清理，不得留下未跟踪文件
+- **写消息文件与 `git commit -F` 必须在同一次执行内完成**：临时目录可能按次隔离，跨执行（尤其跨提权）写入的文件后一次读不到
 - 多份提交需要 GPG 提权时，先整理好全部提交，再**一次提权、多次使用**，避免反复授权
 - 针对当前仓库的文件，不做超出范围的修改
 - **Windows 环境使用 PowerShell**（`PS>` 前缀），**Linux/macOS 环境使用 Bash**（`$` 前缀）
